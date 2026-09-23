@@ -1043,13 +1043,26 @@ fn path_for_resource_helper(
     // NSBundle's normal lookup remains first; this fallback only applies when
     // the requested resource is not found there.
     let data_component = ns_string::get_static_str(env, "Data");
-    let data_path: id = msg![env; path stringByAppendingPathComponent:data_component];
-    let data_path: id = msg![env; data_path stringByAppendingPathComponent:name];
+    let mut data_path: id = msg![env; bundle resourcePath];
+    data_path = msg![env; data_path stringByAppendingPathComponent:data_component];
+    if lproj != nil {
+        data_path = msg![env; data_path stringByAppendingPathComponent:lproj];
+    }
+    if directory != nil {
+        data_path = msg![env; data_path stringByAppendingPathComponent:directory];
+    }
+    data_path = msg![env; data_path stringByAppendingPathComponent:name];
+    if extension != nil {
+        let ext_str = ns_string::to_rust_string(env, extension);
+        if !ext_str.is_empty() {
+            data_path = msg![env; data_path stringByAppendingPathExtension:extension];
+        }
+    }
     let data_path_exists: bool = msg![env; file_manager fileExistsAtPath:data_path];
     log!(
         "NSBundle resource lookup: {:?} missing, Unity Data fallback {:?} exists={}",
-        path,
-        data_path,
+        ns_string::to_rust_string(env, path),
+        ns_string::to_rust_string(env, data_path),
         data_path_exists
     );
     if data_path_exists {

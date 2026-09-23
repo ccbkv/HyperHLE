@@ -68,6 +68,8 @@ pub struct UITableViewHostObject {
     separator_color: id,
     table_header_view: id,
     table_footer_view: id,
+    /// Retained background view, pinned to the visible bounds.
+    background_view: id,
     /// Whether we have performed the implicit first `reloadData`. UIKit
     /// reloads a table the first time it lays out with a data source; touchHLE
     /// has no automatic layout pass, so we trigger that reload ourselves the
@@ -89,6 +91,7 @@ impl Default for UITableViewHostObject {
             separator_color: nil,
             table_header_view: nil,
             table_footer_view: nil,
+            background_view: nil,
             auto_reloaded: false,
         }
     }
@@ -409,7 +412,31 @@ pub const CLASSES: ClassExports = objc_classes! {
     if header != nil { release(env, header); }
     if footer != nil { release(env, footer); }
     if separator_color != nil { release(env, separator_color); }
+    let background = env.objc.borrow::<UITableViewHostObject>(this).background_view;
+    release(env, background);
     msg_super![env; this dealloc]
+}
+
+- (id)backgroundView {
+    env.objc.borrow::<UITableViewHostObject>(this).background_view
+}
+
+- (())setBackgroundView:(id)view {
+    let old = env.objc.borrow::<UITableViewHostObject>(this).background_view;
+    if old == view {
+        return;
+    }
+    retain(env, view);
+    env.objc.borrow_mut::<UITableViewHostObject>(this).background_view = view;
+    if old != nil {
+        () = msg![env; old removeFromSuperview];
+        release(env, old);
+    }
+    if view != nil {
+        let bounds: CGRect = msg![env; this bounds];
+        () = msg![env; view setFrame:bounds];
+        () = msg![env; this insertSubview:view atIndex:(0 as NSInteger)];
+    }
 }
 
 - (id)visibleCells {
@@ -439,12 +466,32 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 - (())setFrame:(CGRect)frame {
     () = msg_super![env; this setFrame:frame];
+    let background = env.objc.borrow::<UITableViewHostObject>(this).background_view;
+    if background != nil {
+        let bounds: CGRect = msg![env; this bounds];
+        () = msg![env; background setFrame:bounds];
+    }
     maybe_auto_reload(env, this);
 }
 
 - (())setBounds:(CGRect)bounds {
     () = msg_super![env; this setBounds:bounds];
+    let background = env.objc.borrow::<UITableViewHostObject>(this).background_view;
+    if background != nil {
+        let bounds: CGRect = msg![env; this bounds];
+        () = msg![env; background setFrame:bounds];
+    }
     maybe_auto_reload(env, this);
+}
+
+- (())layoutSubviews {
+    () = msg_super![env; this layoutSubviews];
+    let background = env.objc.borrow::<UITableViewHostObject>(this).background_view;
+    if background != nil {
+        let bounds: CGRect = msg![env; this bounds];
+        () = msg![env; background setFrame:bounds];
+        () = msg![env; this sendSubviewToBack:background];
+    }
 }
 
 - (())reloadData {

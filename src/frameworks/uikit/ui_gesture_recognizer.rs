@@ -3,16 +3,25 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
-//! `UIGestureRecognizer` and the tap/swipe recognizers available in iOS 3.2.
+//! Gesture recognizer interfaces, with local tap/swipe touch tracking.
+//! Pan/long-press recognition and failure arbitration are not implemented.
 
-use crate::frameworks::core_graphics::CGPoint;
+use crate::frameworks::core_graphics::{CGFloat, CGPoint};
 use crate::frameworks::foundation::{NSInteger, NSUInteger};
-use crate::objc::{id, msg, msg_send, nil, objc_classes, ClassExports, HostObject, NSZonePtr, SEL};
+use crate::objc::{
+    id, msg, msg_send, nil, objc_classes, release, retain, ClassExports, HostObject,
+    NSZonePtr, SEL,
+};
 use crate::Environment;
 
 pub type UIGestureRecognizerState = NSInteger;
 pub const UIGestureRecognizerStatePossible: UIGestureRecognizerState = 0;
-pub const UIGestureRecognizerStateRecognized: UIGestureRecognizerState = 3;
+pub const UIGestureRecognizerStateBegan: UIGestureRecognizerState = 1;
+pub const UIGestureRecognizerStateChanged: UIGestureRecognizerState = 2;
+pub const UIGestureRecognizerStateEnded: UIGestureRecognizerState = 3;
+pub const UIGestureRecognizerStateCancelled: UIGestureRecognizerState = 4;
+pub const UIGestureRecognizerStateRecognized: UIGestureRecognizerState =
+    UIGestureRecognizerStateEnded;
 pub const UIGestureRecognizerStateFailed: UIGestureRecognizerState = 5;
 
 pub type UISwipeGestureRecognizerDirection = NSUInteger;
@@ -30,8 +39,9 @@ enum GestureKind {
 
 pub(super) struct UIGestureRecognizerHostObject {
     // UIKit does not retain targets, delegates or the associated view.
-    target: id,
-    action: Option<SEL>,
+    targets: Vec<(id, SEL)>,
+    // Retained relationships, matching PR #95; not yet arbitrated.
+    require_to_fail: Vec<id>,
     delegate: id,
     pub(super) view: id,
     kind: GestureKind,
@@ -46,14 +56,21 @@ pub(super) struct UIGestureRecognizerHostObject {
     initial_location: CGPoint,
     current_location: CGPoint,
     tracking: bool,
+    minimum_number_of_touches: NSUInteger,
+    maximum_number_of_touches: NSUInteger,
+    translation: CGPoint,
+    velocity: CGPoint,
+    minimum_press_duration: f64,
+    allowable_movement: CGFloat,
+    edges: NSUInteger,
 }
 impl HostObject for UIGestureRecognizerHostObject {}
 
 impl UIGestureRecognizerHostObject {
     fn new(kind: GestureKind) -> Self {
         Self {
-            target: nil,
-            action: None,
+            targets: Vec::new(),
+            require_to_fail: Vec::new(),
             delegate: nil,
             view: nil,
             kind,
@@ -68,6 +85,13 @@ impl UIGestureRecognizerHostObject {
             initial_location: CGPoint { x: 0.0, y: 0.0 },
             current_location: CGPoint { x: 0.0, y: 0.0 },
             tracking: false,
+            minimum_number_of_touches: 1,
+            maximum_number_of_touches: NSInteger::MAX as NSUInteger,
+            translation: CGPoint { x: 0.0, y: 0.0 },
+            velocity: CGPoint { x: 0.0, y: 0.0 },
+            minimum_press_duration: 0.5,
+            allowable_movement: 10.0,
+            edges: 0,
         }
     }
 }
@@ -79,33 +103,30 @@ impl Default for UIGestureRecognizerHostObject {
 }
 
 fn init_with_target(env: &mut Environment, this: id, target: id, action: SEL) -> id {
-    let recognizer = env.objc.borrow_mut::<UIGestureRecognizerHostObject>(this);
-    recognizer.target = target;
-    recognizer.action = Some(action);
+    if target != nil && !action.is_null() {
+        env.objc.borrow_mut::<UIGestureRecognizerHostObject>(this)
+            .targets.push((target, action));
+    }
     this
 }
 
-fn send_action(env: &mut Environment, recognizer: id) {
-    let (target, action) = {
-        let host = env.objc.borrow::<UIGestureRecognizerHostObject>(recognizer);
-        (host.target, host.action)
-    };
-    let Some(action) = action else { return };
-    if target == nil {
-        log!("TODO: UIGestureRecognizer target:nil responder-chain dispatch is unsupported");
-        return;
+pub fn fire_targets(env: &mut Environment, recognizer: id) {
+    let targets = env.objc.borrow::<UIGestureRecognizerHostObject>(recognizer)
+        .targets.clone();
+    retain(env, recognizer);
+    for (target, action) in targets {
+        if target == nil || action.is_null() {
+            continue;
+        }
+        let colon_count = action.as_str(&env.mem).bytes()
+            .filter(|&b| b == b':').count();
+        match colon_count {
+            0 => () = msg_send(env, (target, action)),
+            1 => () = msg_send(env, (target, action, recognizer)),
+            _ => log!("Unexpected gesture recognizer action {:?}", action),
+        }
     }
-
-    let colon_count = action
-        .as_str(&env.mem)
-        .bytes()
-        .filter(|&b| b == b':')
-        .count();
-    match colon_count {
-        0 => () = msg_send(env, (target, action)),
-        1 => () = msg_send(env, (target, action, recognizer)),
-        _ => panic!("Unexpected gesture recognizer action {:?}", action),
-    }
+    release(env, recognizer);
 }
 
 pub const CLASSES: ClassExports = objc_classes! {
@@ -121,6 +142,71 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 - (id)initWithTarget:(id)target action:(SEL)action {
     init_with_target(env, this, target, action)
+}
+
+- (())dealloc {
+    let required = std::mem::take(
+        &mut env.objc.borrow_mut::<UIGestureRecognizerHostObject>(this).require_to_fail,
+    );
+    for other in required {
+        release(env, other);
+    }
+    env.objc.dealloc_object(this, &mut env.mem)
+}
+
+- (())addTarget:(id)target action:(SEL)action {
+    init_with_target(env, this, target, action);
+}
+
+- (())removeTarget:(id)target action:(SEL)action {
+    env.objc.borrow_mut::<UIGestureRecognizerHostObject>(this).targets
+        .retain(|&(t, a)| (target != nil && t != target)
+            || (!action.is_null() && a != action));
+}
+
+- (())requireGestureRecognizerToFail:(id)other {
+    if other == nil || other == this {
+        return;
+    }
+    if env.objc.borrow::<UIGestureRecognizerHostObject>(this)
+        .require_to_fail.contains(&other) {
+        return;
+    }
+    retain(env, other);
+    env.objc.borrow_mut::<UIGestureRecognizerHostObject>(this)
+        .require_to_fail.push(other);
+}
+
+- (())setState:(UIGestureRecognizerState)state {
+    env.objc.borrow_mut::<UIGestureRecognizerHostObject>(this).state = state;
+}
+
+- (())reset {
+    let host = env.objc.borrow_mut::<UIGestureRecognizerHostObject>(this);
+    host.state = UIGestureRecognizerStatePossible;
+    host.tracking = false;
+}
+
+- (NSUInteger)numberOfTouches {
+    env.objc.borrow::<UIGestureRecognizerHostObject>(this).tracking as NSUInteger
+}
+
+- (CGPoint)locationOfTouch:(NSUInteger)index inView:(id)view {
+    let tracking = env.objc.borrow::<UIGestureRecognizerHostObject>(this).tracking;
+    if index == 0 && tracking {
+        msg![env; this locationInView:view]
+    } else {
+        CGPoint { x: 0.0, y: 0.0 }
+    }
+}
+
+- (())touchesBegan:(id)_touches withEvent:(id)_event {}
+- (())touchesMoved:(id)_touches withEvent:(id)_event {}
+- (())touchesEnded:(id)_touches withEvent:(id)_event {}
+- (())touchesCancelled:(id)_touches withEvent:(id)_event {
+    let host = env.objc.borrow_mut::<UIGestureRecognizerHostObject>(this);
+    host.tracking = false;
+    host.state = UIGestureRecognizerStateCancelled;
 }
 
 - (id)delegate { env.objc.borrow::<UIGestureRecognizerHostObject>(this).delegate }
@@ -173,6 +259,48 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 @end
 
+@implementation UIPanGestureRecognizer: UIGestureRecognizer
+
++ (id)allocWithZone:(NSZonePtr)_zone {
+    let host = Box::<UIGestureRecognizerHostObject>::default();
+    env.objc.alloc_object(this, host, &mut env.mem)
+}
+
+- (NSUInteger)minimumNumberOfTouches {
+    env.objc.borrow::<UIGestureRecognizerHostObject>(this).minimum_number_of_touches
+}
+- (())setMinimumNumberOfTouches:(NSUInteger)value {
+    env.objc.borrow_mut::<UIGestureRecognizerHostObject>(this).minimum_number_of_touches = value;
+}
+- (NSUInteger)maximumNumberOfTouches {
+    env.objc.borrow::<UIGestureRecognizerHostObject>(this).maximum_number_of_touches
+}
+- (())setMaximumNumberOfTouches:(NSUInteger)value {
+    env.objc.borrow_mut::<UIGestureRecognizerHostObject>(this).maximum_number_of_touches = value;
+}
+- (CGPoint)translationInView:(id)_view {
+    env.objc.borrow::<UIGestureRecognizerHostObject>(this).translation
+}
+- (())setTranslation:(CGPoint)translation inView:(id)_view {
+    env.objc.borrow_mut::<UIGestureRecognizerHostObject>(this).translation = translation;
+}
+- (CGPoint)velocityInView:(id)_view {
+    env.objc.borrow::<UIGestureRecognizerHostObject>(this).velocity
+}
+
+@end
+
+@implementation UIScreenEdgePanGestureRecognizer: UIPanGestureRecognizer
+
+- (NSUInteger)edges {
+    env.objc.borrow::<UIGestureRecognizerHostObject>(this).edges
+}
+- (())setEdges:(NSUInteger)edges {
+    env.objc.borrow_mut::<UIGestureRecognizerHostObject>(this).edges = edges;
+}
+
+@end
+
 @implementation UITapGestureRecognizer: UIGestureRecognizer
 
 + (id)allocWithZone:(NSZonePtr)_zone {
@@ -194,6 +322,41 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 @end
 
+
+@implementation UILongPressGestureRecognizer: UIGestureRecognizer
+
++ (id)allocWithZone:(NSZonePtr)_zone {
+    let mut host = Box::<UIGestureRecognizerHostObject>::default();
+    host.number_of_taps_required = 0;
+    env.objc.alloc_object(this, host, &mut env.mem)
+}
+
+- (f64)minimumPressDuration {
+    env.objc.borrow::<UIGestureRecognizerHostObject>(this).minimum_press_duration
+}
+- (())setMinimumPressDuration:(f64)value {
+    env.objc.borrow_mut::<UIGestureRecognizerHostObject>(this).minimum_press_duration = value;
+}
+- (CGFloat)allowableMovement {
+    env.objc.borrow::<UIGestureRecognizerHostObject>(this).allowable_movement
+}
+- (())setAllowableMovement:(CGFloat)value {
+    env.objc.borrow_mut::<UIGestureRecognizerHostObject>(this).allowable_movement = value;
+}
+- (NSUInteger)numberOfTapsRequired {
+    env.objc.borrow::<UIGestureRecognizerHostObject>(this).number_of_taps_required
+}
+- (())setNumberOfTapsRequired:(NSUInteger)value {
+    env.objc.borrow_mut::<UIGestureRecognizerHostObject>(this).number_of_taps_required = value;
+}
+- (NSUInteger)numberOfTouchesRequired {
+    env.objc.borrow::<UIGestureRecognizerHostObject>(this).number_of_touches_required
+}
+- (())setNumberOfTouchesRequired:(NSUInteger)value {
+    env.objc.borrow_mut::<UIGestureRecognizerHostObject>(this).number_of_touches_required = value;
+}
+
+@end
 
 @implementation UISwipeGestureRecognizer: UIGestureRecognizer
 
@@ -380,7 +543,7 @@ pub(super) fn touches_ended(env: &mut Environment, view: id, touches: id) {
             env.objc
                 .borrow_mut::<UIGestureRecognizerHostObject>(recognizer)
                 .state = UIGestureRecognizerStateRecognized;
-            send_action(env, recognizer);
+            fire_targets(env, recognizer);
         } else {
             env.objc
                 .borrow_mut::<UIGestureRecognizerHostObject>(recognizer)
