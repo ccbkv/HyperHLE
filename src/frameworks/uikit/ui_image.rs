@@ -76,8 +76,21 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 + (id)imageNamed:(id)name { // NSString*
     let bundle: id = msg_class![env; NSBundle mainBundle];
-    let path: id = msg![env; bundle pathForResource:name ofType:nil];
+    let mut path: id = msg![env; bundle pathForResource:name ofType:nil];
     let name_str = ns_string::to_rust_string(env, name).to_string();
+
+    // Real iOS also tries "<name>.png" (and its "@2x" variant) when the
+    // literal name isn't found: apps of the iOS 2-4 era commonly call
+    // [UIImage imageNamed:@"Foo"] for a bundle file Foo.png. The "@2x"
+    // variant is preferred, mirroring launch-image resolution in bundle.rs.
+    if path == nil {
+        let png_ext = ns_string::get_static_str(env, "png");
+        let name_at2x = ns_string::from_rust_string(env, format!("{}@2x", name_str));
+        path = msg![env; bundle pathForResource:name_at2x ofType:png_ext];
+        if path == nil {
+            path = msg![env; bundle pathForResource:name ofType:png_ext];
+        }
+    }
 
     if State::get(env).cached_images.len() > CACHE_SIZE {
         let cache = std::mem::take(&mut State::get_mut(env).cached_images);
