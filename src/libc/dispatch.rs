@@ -263,11 +263,11 @@ fn dispatch_queue_release(_env: &mut Environment, _queue: dispatch_queue_t) {
     // no-op
 }
 
-fn dispatch_retain(_env: &mut Environment, _obj: MutVoidPtr) {
+pub(crate) fn dispatch_retain(_env: &mut Environment, _obj: MutVoidPtr) {
     // no-op for all dispatch objects
 }
 
-fn dispatch_release(_env: &mut Environment, _obj: MutVoidPtr) {
+pub(crate) fn dispatch_release(_env: &mut Environment, _obj: MutVoidPtr) {
     // no-op
 }
 

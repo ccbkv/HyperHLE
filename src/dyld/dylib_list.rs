@@ -57,6 +57,23 @@ pub const MAP_KIT: super::HostDylib = super::HostDylib {
     function_exports: &[frameworks::map_kit::FUNCTIONS],
 };
 
+// Private frameworks used by Apple's Calculator on iPhone OS 3.x.
+pub const CALCULATE: super::HostDylib = super::HostDylib {
+    path: "/System/Library/PrivateFrameworks/Calculate.framework/Calculate",
+    aliases: &[],
+    class_exports: &[],
+    constant_exports: &[],
+    function_exports: &[frameworks::calculate::FUNCTIONS],
+};
+
+pub const GRAPHICS_SERVICES: super::HostDylib = super::HostDylib {
+    path: "/System/Library/PrivateFrameworks/GraphicsServices.framework/GraphicsServices",
+    aliases: &[],
+    class_exports: &[],
+    constant_exports: &[],
+    function_exports: &[frameworks::graphics_services::FUNCTIONS],
+};
+
 // MessageUI (stub — MFMailComposeViewController lives in MediaPlayer exports)
 pub const MESSAGE_UI: super::HostDylib = super::HostDylib {
     path: "/System/Library/Frameworks/MessageUI.framework/MessageUI",
@@ -213,6 +230,8 @@ pub const DYLIB_LIST: &[&super::HostDylib] = &[
     &frameworks::store_kit::DYLIB,
     &frameworks::system_configuration::DYLIB,
     &frameworks::uikit::DYLIB,
+    &CALCULATE,
+    &GRAPHICS_SERVICES,
     &frameworks::libicucore::DYLIB,
     &frameworks::libsqlite3::DYLIB,
     &frameworks::libxml2::DYLIB,

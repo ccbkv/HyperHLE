@@ -944,6 +944,7 @@ pub const DYLIB: crate::dyld::HostDylib = crate::dyld::HostDylib {
         ui_view::ui_table_view::CLASSES,
         ui_view::ui_text_selection_view::CLASSES,
         ui_view::ui_toolbar::CLASSES,
+        ui_view::ui_transition_view::CLASSES,
         ui_view::ui_web_view::CLASSES,
         ui_view::ui_window::CLASSES,
         ui_view_controller::CLASSES,

@@ -308,6 +308,10 @@ pub const CLASSES: ClassExports = objc_classes! {
     };
 
     let object: id = msg![env; selected_class alloc];
+    // #region debug-point A:swap-begin
+    let debug_allocated_object = object;
+    if let Ok(url) = std::env::var("HYPERHLE_NIB_DEBUG_URL") { let body = format!(r#"{{"sessionId":"qr-nib-lifecycle","runId":"pre-fix","hypothesisId":"A","location":"UIClassSwapper::initWithCoder","msg":"[DEBUG] swap begin","data":{{"placeholder":{},"allocated":{},"class":{},"coder":{}}}}}"#, this.to_bits(), object.to_bits(), selected_class.to_bits(), coder.to_bits()); let _ = ureq::post(&url).timeout(std::time::Duration::from_millis(200)).set("Content-Type", "application/json").send_string(&body); }
+    // #endregion
 
     // ВАЖНО: Всегда используем initWithCoder:, кроме тех случаев, когда это
     // чисто кастомный плейсхолдер Interface Builder
@@ -318,6 +322,9 @@ pub const CLASSES: ClassExports = objc_classes! {
     } else {
         msg![env; object initWithCoder:coder]
     };
+    // #region debug-point A:swap-end
+    if let Ok(url) = std::env::var("HYPERHLE_NIB_DEBUG_URL") { let body = format!(r#"{{"sessionId":"qr-nib-lifecycle","runId":"pre-fix","hypothesisId":"A","location":"UIClassSwapper::initWithCoder","msg":"[DEBUG] swap end","data":{{"placeholder":{},"allocated":{},"returned":{},"allocatedLive":{},"returnedLive":{}}}}}"#, this.to_bits(), debug_allocated_object.to_bits(), object.to_bits(), env.objc.get_host_object(debug_allocated_object).is_some(), env.objc.get_host_object(object).is_some()); let _ = ureq::post(&url).timeout(std::time::Duration::from_millis(200)).set("Content-Type", "application/json").send_string(&body); }
+    // #endregion
 
     release(env, this);
     object

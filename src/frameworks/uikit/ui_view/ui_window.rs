@@ -24,6 +24,7 @@ use crate::frameworks::uikit::ui_device::{
     UIDeviceOrientationLandscapeLeft, UIDeviceOrientationLandscapeRight,
     UIDeviceOrientationPortraitUpsideDown,
 };
+use crate::mem::{ConstVoidPtr, MutPtr};
 use crate::objc::{id, msg, msg_class, msg_super, nil, objc_classes, release, retain, ClassExports};
 use std::collections::HashMap;
 
@@ -59,6 +60,10 @@ pub const CLASSES: ClassExports = objc_classes! {
 // for API compatibility without changing the single-screen ordering.
 - (())setWindowLevel:(f32)_level { }
 - (f32)windowLevel { 0.0 }
+
+- (id)initWithContentRect:(CGRect)rect {
+    msg![env; this initWithFrame:rect]
+}
 
 - (id)initWithFrame:(CGRect)frame {
     let this = msg_super![env; this initWithFrame:frame];
@@ -499,6 +504,12 @@ pub const UIKeyboardWillHideNotification: &str = "UIKeyboardWillHideNotification
 pub const UIKeyboardDidHideNotification: &str = "UIKeyboardDidHideNotification";
 pub const UIKeyboardBoundsUserInfoKey: &str = "UIKeyboardBoundsUserInfoKey";
 
+fn ui_window_view_rotation_duration(env: &mut crate::Environment) -> ConstVoidPtr {
+    let ptr: MutPtr<u32> = env.mem.alloc(4).cast();
+    env.mem.write(ptr, 0.3f32.to_bits());
+    ptr.cast().cast_const()
+}
+
 pub const CONSTANTS: ConstantExports = &[
     (
         "_UIWindowDidBecomeKeyNotification",
@@ -515,6 +526,10 @@ pub const CONSTANTS: ConstantExports = &[
     (
         "_UIWindowDidBecomeVisibleNotification",
         HostConstant::NSString(UIWindowDidBecomeVisibleNotification),
+    ),
+    (
+        "_UIWindowViewRotationDuration",
+        HostConstant::Custom(ui_window_view_rotation_duration),
     ),
     // _UIKeyboardWillShowNotification, _UIKeyboardDidShowNotification,
     // _UIKeyboardWillHideNotification, _UIKeyboardDidHideNotification and

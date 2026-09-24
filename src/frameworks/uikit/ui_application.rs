@@ -33,6 +33,7 @@ struct UIApplicationHostObject {
     delegate: id,
     delegate_is_retained: bool,
     status_bar_style: UIStatusBarStyle,
+    status_bar_mode: i32,
     /// The most recent value set via `-setApplicationIconBadgeNumber:`.
     /// Per Apple's UIApplication docs the property is read/write and
     /// defaults to 0; we honour both the getter and the setter even
@@ -61,6 +62,12 @@ pub const UIApplicationStateActive: UIApplicationState = 0;
 pub const UIApplicationStateInactive: UIApplicationState = 1;
 pub const UIApplicationStateBackground: UIApplicationState = 2;
 
+fn legacy_status_bar_height(_mode: i32, _orientation: UIInterfaceOrientation) -> f32 {
+    // touchHLE does not render the system status bar, so legacy callers should
+    // not reserve any vertical space for it.
+    0.0
+}
+
 pub const CLASSES: ClassExports = objc_classes! {
 
 (env, this, _cmd);
@@ -72,6 +79,7 @@ pub const CLASSES: ClassExports = objc_classes! {
         delegate: nil,
         delegate_is_retained: false,
         status_bar_style: 0,
+        status_bar_mode: 0,
         application_icon_badge_number: 0,
     });
     env.objc.alloc_static_object(this, host_object, &mut env.mem)
@@ -117,6 +125,29 @@ pub const CLASSES: ClassExports = objc_classes! {
             release(env, old_delegate);
         }
     }
+}
+
+- (i32)statusBarMode {
+    env.objc.borrow::<UIApplicationHostObject>(this).status_bar_mode
+}
+- (())_setStatusBarMode:(i32)mode {
+    env.objc.borrow_mut::<UIApplicationHostObject>(this).status_bar_mode = mode;
+}
+
+- (())setStatusBarMode:(i32)mode
+           orientation:(UIInterfaceOrientation)orientation
+              duration:(f32)_duration
+               fenceID:(i32)_fence_id
+             animation:(i32)_animation {
+    () = msg![env; this _setStatusBarMode:mode];
+    if orientation != UIDeviceOrientationUnknown {
+        () = msg![env; this setStatusBarOrientation:orientation];
+    }
+}
+
+- (f32)currentStatusBarHeightForMode:(i32)mode
+                         orientation:(UIInterfaceOrientation)orientation {
+    legacy_status_bar_height(mode, orientation)
 }
 
 - (bool)isStatusBarHidden {
@@ -459,10 +490,12 @@ pub const CLASSES: ClassExports = objc_classes! {
 }
 
 - (CGRect)statusBarFrame {
-    // Report a zero-height status bar since we don't render one.
+    let status_bar_mode = env.objc.borrow::<UIApplicationHostObject>(this).status_bar_mode;
+    let orientation: UIInterfaceOrientation = msg![env; this statusBarOrientation];
+    let height = legacy_status_bar_height(status_bar_mode, orientation);
     CGRect {
         origin: crate::frameworks::core_graphics::CGPoint { x: 0.0, y: 0.0 },
-        size: crate::frameworks::core_graphics::CGSize { width: 320.0, height: 0.0 },
+        size: crate::frameworks::core_graphics::CGSize { width: 320.0, height },
     }
 }
 

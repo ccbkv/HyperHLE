@@ -163,6 +163,9 @@ impl super::ObjC {
         let guest_object = objc_object { isa };
         let ptr: MutPtr<objc_object> = mem.alloc(instance_size).cast();
         mem.write(ptr, guest_object);
+        // #region debug-point B:allocate
+        if host_object.type_name().contains("ui_view") { if let Ok(url) = std::env::var("HYPERHLE_NIB_DEBUG_URL") { let body = format!(r#"{{"sessionId":"qr-nib-lifecycle","runId":"pre-fix","hypothesisId":"B","location":"objects::alloc_object_inner","msg":"[DEBUG] allocate","data":{{"object":{},"class":{},"refs":{},"host":"{}"}}}}"#, ptr.to_bits(), isa.to_bits(), refcount.map(|n| n.get()).unwrap_or(0), host_object.type_name()); let _ = ureq::post(&url).timeout(std::time::Duration::from_millis(200)).set("Content-Type", "application/json").send_string(&body); } }
+        // #endregion
         self.objects.insert(
             ptr,
             HostObjectEntry {
@@ -354,6 +357,9 @@ impl super::ObjC {
         if object == nil {
             return false;
         }
+        // #region debug-point C:release
+        if let Some(entry) = self.objects.get(&object) { if entry.host_object.type_name().contains("ui_view") { if let Ok(url) = std::env::var("HYPERHLE_NIB_DEBUG_URL") { let body = format!(r#"{{"sessionId":"qr-nib-lifecycle","runId":"pre-fix","hypothesisId":"C","location":"objects::decrement_refcount","msg":"[DEBUG] release before decrement","data":{{"object":{},"refs":{}}}}}"#, object.to_bits(), entry.refcount.map(|n| n.get()).unwrap_or(0)); let _ = ureq::post(&url).timeout(std::time::Duration::from_millis(200)).set("Content-Type", "application/json").send_string(&body); } } }
+        // #endregion
         if let Some(entry) = self.objects.get_mut(&object) {
             if let Some(refcount) = entry.refcount.as_mut() {
                 if refcount.get() == 1 {
@@ -432,6 +438,9 @@ impl super::ObjC {
         // subsequent `objc_loadWeakRetained` calls correctly observe
         // `nil`. This must happen before we drop the host object,
         // because the writeback uses guest memory only.
+        // #region debug-point B:deallocate
+        if let Some(entry) = self.objects.get(&object) { if entry.host_object.type_name().contains("ui_view") { if let Ok(url) = std::env::var("HYPERHLE_NIB_DEBUG_URL") { let stack = std::backtrace::Backtrace::force_capture().to_string().replace('\\', "\\\\").replace('"', "\\\"").replace('\r', "\\r").replace('\n', "\\n").replace('\t', "\\t"); let body = format!(r#"{{"sessionId":"qr-nib-lifecycle","runId":"pre-fix","hypothesisId":"B","location":"objects::dealloc_object","msg":"[DEBUG] deallocate","data":{{"object":{},"stack":"{}"}}}}"#, object.to_bits(), stack); let _ = ureq::post(&url).timeout(std::time::Duration::from_millis(200)).set("Content-Type", "application/json").send_string(&body); } } }
+        // #endregion
         self.zero_weak_references_for(object, mem);
 
         if let Some(entry) = self.objects.remove(&object) {

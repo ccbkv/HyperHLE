@@ -22,6 +22,7 @@ pub mod ui_scroll_view;
 pub mod ui_table_view;
 pub mod ui_text_selection_view;
 pub mod ui_toolbar;
+pub mod ui_transition_view;
 pub mod ui_web_view;
 pub mod ui_window;
 
