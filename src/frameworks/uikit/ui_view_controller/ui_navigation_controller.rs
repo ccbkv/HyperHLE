@@ -427,6 +427,7 @@ pub const CLASSES: ClassExports = objc_classes! {
     host.laying_out = true;
     let stack = host.navigation_stack.clone();
     let hidden = host.navigation_bar_hidden;
+    let toolbar_hidden = host.toolbar_hidden;
     let container: id = msg![env; this view];
     let bounds: CGRect = msg![env; container bounds];
     let bar: id = msg![env; this navigationBar];
@@ -438,9 +439,12 @@ pub const CLASSES: ClassExports = objc_classes! {
     }
     () = msg![env; bar setItems:items];
     let height = if hidden { 0.0 } else { 44.0f32.min(bounds.size.height.max(0.0)) };
+    let toolbar_height = if toolbar_hidden { 0.0 } else {
+        44.0f32.min((bounds.size.height - height).max(0.0))
+    };
     let content = CGRect {
         origin: CGPoint { x: bounds.origin.x, y: bounds.origin.y + height },
-        size: CGSize { width: bounds.size.width, height: (bounds.size.height - height).max(0.0) },
+        size: CGSize { width: bounds.size.width, height: (bounds.size.height - height - toolbar_height).max(0.0) },
     };
     if let Some(&top) = stack.last() {
         for &vc in &stack {
@@ -462,6 +466,25 @@ pub const CLASSES: ClassExports = objc_classes! {
     let parent: id = msg![env; bar superview];
     if parent != container { () = msg![env; container addSubview:bar]; }
     () = msg![env; container bringSubviewToFront:bar];
+    let toolbar: id = msg![env; this toolbar];
+    let top = stack.last().copied().unwrap_or(nil);
+    let toolbar_items: id = msg![env; top toolbarItems];
+    let existing: id = msg![env; toolbar items];
+    let same: bool = if existing == toolbar_items { true } else {
+        msg![env; existing isEqualToArray:toolbar_items]
+    };
+    if !same { () = msg![env; toolbar setItems:toolbar_items animated:false]; }
+    () = msg![env; toolbar setFrame:(CGRect {
+        origin: CGPoint { x: bounds.origin.x,
+            y: bounds.origin.y + bounds.size.height - toolbar_height },
+        size: CGSize { width: bounds.size.width, height: toolbar_height },
+    })];
+    () = msg![env; toolbar setHidden:toolbar_hidden];
+    let parent: id = msg![env; toolbar superview];
+    if parent != container { () = msg![env; container addSubview:toolbar]; }
+    () = msg![env; container bringSubviewToFront:toolbar];
+    () = msg![env; toolbar layoutSubviews];
+    () = msg![env; toolbar setNeedsDisplay];
     env.objc.borrow_mut::<UINavigationControllerHostObject>(this).laying_out = false;
 }
 
@@ -530,6 +553,7 @@ pub const CLASSES: ClassExports = objc_classes! {
     env.objc.borrow_mut::<UINavigationControllerHostObject>(this).toolbar_hidden = hidden;
     let tb = msg![env; this toolbar];
     let _: () = msg![env; tb setHidden:hidden];
+    () = msg![env; this _touchHLELayoutNavigation];
 }
 
 // =========================================================================

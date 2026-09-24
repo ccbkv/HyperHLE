@@ -52,6 +52,8 @@ pub(crate) struct UIViewControllerHostObject {
     /// Lazily-created `UINavigationItem` returned by `-navigationItem`.
     /// Retained while it lives in this slot.
     navigation_item: id,
+    /// Copied array of UIBarButtonItem objects for the navigation toolbar.
+    toolbar_items: id,
     // ---------------------------
     modal_transition_style: UIModalTransitionStyle,
     modal_presentation_style: UIModalPresentationStyle,
@@ -118,6 +120,32 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 - (id)parentViewController {
     env.objc.borrow::<UIViewControllerHostObject>(this).parent_view_controller
+}
+
+- (id)toolbarItems {
+    env.objc.borrow::<UIViewControllerHostObject>(this).toolbar_items
+}
+
+- (())setToolbarItems:(id)items {
+    () = msg![env; this setToolbarItems:items animated:false];
+}
+
+- (())setToolbarItems:(id)items animated:(bool)animated {
+    let copied: id = if items == nil { nil } else { msg![env; items copy] };
+    let old = std::mem::replace(
+        &mut env.objc.borrow_mut::<UIViewControllerHostObject>(this).toolbar_items,
+        copied,
+    );
+    release(env, old);
+    let nav: id = msg![env; this navigationController];
+    if nav != nil {
+        let top: id = msg![env; nav topViewController];
+        if top == this {
+            let toolbar: id = msg![env; nav toolbar];
+            () = msg![env; toolbar setItems:copied animated:animated];
+            () = msg![env; nav _touchHLELayoutNavigation];
+        }
+    }
 }
 
 - (id)initWithNibName:(id)nib_name // NSString *
@@ -191,6 +219,8 @@ pub const CLASSES: ClassExports = objc_classes! {
     // release.
     let navigation_item = env.objc.borrow::<UIViewControllerHostObject>(this).navigation_item;
     if navigation_item != nil { release(env, navigation_item); }
+    let toolbar_items = env.objc.borrow::<UIViewControllerHostObject>(this).toolbar_items;
+    release(env, toolbar_items);
     if storyboard != nil { release(env, storyboard); }
 
     env.objc.dealloc_object(this, &mut env.mem);

@@ -673,7 +673,14 @@ pub(super) fn UIApplicationMain(
                 }
             }
             if delegate_class != nil {
-                let delegate: id = msg![env; delegate_class new];
+                let uses_application: bool =
+                    msg![env; ui_application isKindOfClass:delegate_class];
+                let delegate: id = if uses_application {
+                    log!("UIApplicationMain: reusing application instance as delegate");
+                    ui_application
+                } else {
+                    msg![env; delegate_class new]
+                };
                 let _: () = msg![env; ui_application setDelegate:delegate];
             } else {
                 log!(
