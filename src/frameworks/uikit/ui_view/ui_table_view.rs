@@ -260,6 +260,11 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 @implementation UITableViewCell: UIView
 
++ (id)allocWithZone:(NSZonePtr)_zone {
+    let host_object = Box::<UITableViewCellHostObject>::default();
+    env.objc.alloc_object(this, host_object, &mut env.mem)
+}
+
 - (())drawRect:(CGRect)_rect {
     use ui_view::ios5_theme::{fill_solid, rgb};
     let ctx = crate::frameworks::uikit::ui_graphics::UIGraphicsGetCurrentContext(env);
@@ -308,11 +313,6 @@ pub const CLASSES: ClassExports = objc_classes! {
         } else { normal };
         fill_solid(env, ctx, strip, color);
     }
-}
-
-+ (id)allocWithZone:(NSZonePtr)_zone {
-    let host_object = Box::<UITableViewCellHostObject>::default();
-    env.objc.alloc_object(this, host_object, &mut env.mem)
 }
 
 - (id)initWithFrame:(CGRect)frame {
@@ -465,6 +465,10 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 @implementation UIProgressView: UIView
 
++ (id)allocWithZone:(NSZonePtr)_zone {
+    env.objc.alloc_object(this, Box::<UIProgressViewHostObject>::default(), &mut env.mem)
+}
+
 - (())layoutSubviews {
     () = msg_super![env; this layoutSubviews];
     () = msg![env; this setNeedsDisplay];
@@ -504,10 +508,6 @@ pub const CLASSES: ClassExports = objc_classes! {
         draw_surface(env, ctx, fill, height / 2.0,
             &[(0.0, top), (1.0, bottom)], rgb(0x405F8A));
     }
-}
-
-+ (id)allocWithZone:(NSZonePtr)_zone {
-    env.objc.alloc_object(this, Box::<UIProgressViewHostObject>::default(), &mut env.mem)
 }
 
 - (())dealloc {

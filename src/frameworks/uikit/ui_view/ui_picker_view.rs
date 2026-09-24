@@ -204,7 +204,7 @@ fn update_component_rows(
         let mut indicator = host.row_indicators.get(&component).copied().unwrap_or(nil);
         if indicator == nil {
             indicator = msg_class![env; _touchHLEPickerSelection alloc];
-            indicator = msg![env; indicator initWithFrame:CGRect::default()];
+            indicator = msg![env; indicator initWithFrame:(CGRect::default())];
             () = msg![env; indicator setOpaque:false];
             () = msg![env; indicator setUserInteractionEnabled:false];
             env.objc.borrow_mut::<UIPickerViewHostObject>(picker).row_indicators.insert(component, indicator);
@@ -235,6 +235,27 @@ pub const CLASSES: ClassExports = objc_classes! {
 (env, this, _cmd);
 
 @implementation UIPickerView: UIView
+
++ (id)allocWithZone:(NSZonePtr)_zone {
+    let host_object = Box::new(UIPickerViewHostObject {
+        superclass: UIViewHostObject::default(),
+        delegate: nil,
+        data_source: nil,
+        shows_selection_indicator: false,
+        number_of_components: 0,
+        selected_rows: Default::default(),
+        positions: Default::default(),
+        animations: Default::default(),
+        drag: None,
+        timer: nil,
+        row_views: HashMap::new(),
+        row_containers: HashMap::new(),
+        row_indicators: HashMap::new(),
+        rows_revision: 0,
+        updating_rows: false,
+    });
+    env.objc.alloc_object(this, host_object, &mut env.mem)
+}
 
 - (())drawRect:(CGRect)_rect {
     () = msg![env; this _touchHLEUpdateRowViews];
@@ -296,27 +317,6 @@ pub const CLASSES: ClassExports = objc_classes! {
         }
         CGContextRestoreGState(env, ctx);
     }
-}
-
-+ (id)allocWithZone:(NSZonePtr)_zone {
-    let host_object = Box::new(UIPickerViewHostObject {
-        superclass: UIViewHostObject::default(),
-        delegate: nil,
-        data_source: nil,
-        shows_selection_indicator: false,
-        number_of_components: 0,
-        selected_rows: Default::default(),
-        positions: Default::default(),
-        animations: Default::default(),
-        drag: None,
-        timer: nil,
-        row_views: HashMap::new(),
-        row_containers: HashMap::new(),
-        row_indicators: HashMap::new(),
-        rows_revision: 0,
-        updating_rows: false,
-    });
-    env.objc.alloc_object(this, host_object, &mut env.mem)
 }
 
 - (id)initWithFrame:(CGRect)frame {
