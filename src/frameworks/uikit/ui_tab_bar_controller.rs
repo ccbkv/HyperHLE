@@ -6,16 +6,19 @@
 //! `UITabBarController` and `UITabBar`.
 
 use crate::frameworks::foundation::NSUInteger;
+use crate::frameworks::core_graphics::{CGPoint, CGRect, CGSize};
+use crate::frameworks::uikit::ui_view::{ios5_theme, UIViewHostObject};
 use crate::frameworks::uikit::ui_view_controller::UIViewControllerHostObject;
 use crate::objc::{
-    id, impl_HostObject_with_superclass, msg, msg_class, nil, objc_classes, release, retain,
-    ClassExports, HostObject, NSZonePtr,
+    id, impl_HostObject_with_superclass, msg, msg_class, msg_super, nil, objc_classes, release, retain,
+    ClassExports, NSZonePtr,
 };
 
 // MARK: - UITabBar host object
 
 #[derive(Default)]
 struct UITabBarHostObject {
+    superclass: UIViewHostObject,
     /// `NSArray*` of `UITabBarItem*`
     items: id,
     /// Currently selected `UITabBarItem*` (weak — owned by `items`)
@@ -25,7 +28,7 @@ struct UITabBarHostObject {
     tint_color: id,     // UIColor*
     translucent: bool,
 }
-impl HostObject for UITabBarHostObject {}
+impl_HostObject_with_superclass!(UITabBarHostObject);
 
 // MARK: - UITabBarController host object
 
@@ -54,6 +57,7 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 + (id)allocWithZone:(NSZonePtr)_zone {
     let host_object = Box::new(UITabBarHostObject {
+        superclass: UIViewHostObject::default(),
         items: nil,
         selected_item: nil,
         delegate: nil,
@@ -65,9 +69,63 @@ pub const CLASSES: ClassExports = objc_classes! {
 }
 
 - (id)init {
-    let items = msg_class![env; NSArray new];
-    env.objc.borrow_mut::<UITabBarHostObject>(this).items = items;
+    msg![env; this initWithFrame:(CGRect::default())]
+}
+
+- (id)initWithFrame:(CGRect)frame {
+    let this: id = msg_super![env; this initWithFrame:frame];
+    () = msg![env; this setNeedsDisplay];
     this
+}
+
+- (())layoutSubviews {
+    () = msg_super![env; this layoutSubviews];
+    () = msg![env; this setNeedsDisplay];
+}
+
+- (())drawRect:(CGRect)_rect {
+    use ios5_theme::{draw_bar_background, draw_surface, BarPalette};
+    let ctx = crate::frameworks::uikit::ui_graphics::UIGraphicsGetCurrentContext(env);
+    if ctx == nil { return; }
+    let bounds: CGRect = msg![env; this bounds];
+    let host = env.objc.borrow::<UITabBarHostObject>(this);
+    let (items, selected, tint) = (host.items, host.selected_item, host.bar_tint_color);
+    let palette = if tint == nil { BarPalette::tab_bar() } else {
+        BarPalette::from_tint(crate::frameworks::uikit::ui_color::get_rgba(&env.objc, tint))
+    };
+    draw_bar_background(env, ctx, bounds, palette);
+    let count: NSUInteger = msg![env; items count];
+    if count == 0 { return; }
+    let width = bounds.size.width / count as f32;
+    let font: id = msg_class![env; UIFont boldSystemFontOfSize:10.0f32];
+    for i in 0..count {
+        let item: id = msg![env; items objectAtIndex:i];
+        let x = bounds.origin.x + i as f32 * width;
+        if item == selected {
+            let rect = CGRect { origin: CGPoint { x: x + 2.0, y: bounds.origin.y + 3.0 },
+                size: CGSize { width: (width - 4.0).max(0.0), height: (bounds.size.height - 5.0).max(0.0) } };
+            draw_surface(env, ctx, rect, 3.0,
+                &[(0.0, (1.0, 1.0, 1.0, 0.15)), (1.0, (1.0, 1.0, 1.0, 0.15))],
+                (0.0, 0.0, 0.0, 0.0));
+        }
+        let image: id = msg![env; item image];
+        if image != nil {
+            let size: CGSize = msg![env; image size];
+            if size.width > 0.0 && size.height > 0.0 {
+                let scale = (30.0 / size.height).min((width - 8.0).max(0.0) / size.width).min(1.0);
+                let rect = CGRect { origin: CGPoint { x: x + (width - size.width * scale) / 2.0, y: bounds.origin.y + 4.0 },
+                    size: CGSize { width: size.width * scale, height: size.height * scale } };
+                () = msg![env; image drawInRect:rect];
+            }
+        }
+        let title: id = msg![env; item title];
+        let size: CGSize = msg![env; title sizeWithFont:font];
+        let color: id = if item == selected { msg_class![env; UIColor whiteColor] }
+            else { msg_class![env; UIColor colorWithWhite:0.65f32 alpha:1.0f32] };
+        () = msg![env; color set];
+        let point = CGPoint { x: x + (width - size.width) / 2.0, y: bounds.origin.y + bounds.size.height - 13.0 };
+        let _: CGSize = msg![env; title drawAtPoint:point withFont:font];
+    }
 }
 
 - (())dealloc {
@@ -78,7 +136,7 @@ pub const CLASSES: ClassExports = objc_classes! {
     release(env, delegate);
     release(env, bar_tint_color);
     release(env, tint_color);
-    env.objc.dealloc_object(this, &mut env.mem)
+    msg_super![env; this dealloc]
 }
 
 // MARK: Items
@@ -94,6 +152,7 @@ pub const CLASSES: ClassExports = objc_classes! {
     env.objc.borrow_mut::<UITabBarHostObject>(this).items = items;
     // Clear selected item — caller must set it again if desired.
     env.objc.borrow_mut::<UITabBarHostObject>(this).selected_item = nil;
+    () = msg![env; this setNeedsDisplay];
 }
 
 - (())setItems:(id)items animated:(bool)_animated {
@@ -130,6 +189,7 @@ pub const CLASSES: ClassExports = objc_classes! {
     // В iOS можно передать nil, чтобы сбросить выделение
     if found || item == nil {
         env.objc.borrow_mut::<UITabBarHostObject>(this).selected_item = item;
+        () = msg![env; this setNeedsDisplay];
 
         // Обязательно уведомляем делегата (контроллер), иначе логика игры не
         // поймет, что вкладка сменилась
@@ -166,6 +226,7 @@ pub const CLASSES: ClassExports = objc_classes! {
     release(env, old);
     retain(env, color);
     env.objc.borrow_mut::<UITabBarHostObject>(this).bar_tint_color = color;
+    () = msg![env; this setNeedsDisplay];
 }
 
 - (id)tintColor { // UIColor*
@@ -349,12 +410,13 @@ pub const CLASSES: ClassExports = objc_classes! {
 
     // Синхронизируем визуальное состояние таббара
     if tab_bar != nil {
-        let vc: id = msg![env; vcs objectAtIndex:index];
-        let item: id = msg![env; vc tabBarItem];
+        let items: id = msg![env; tab_bar items];
+        let item: id = msg![env; items objectAtIndex:index];
         // Теперь это не вызовет варнинг, так как мы наполнили массив в
         // setViewControllers
         let _: () = msg![env; tab_bar setSelectedItem:item];
     }
+    let _: id = msg![env; this view];
 }
 
 - (id)selectedViewController {
@@ -409,9 +471,38 @@ pub const CLASSES: ClassExports = objc_classes! {
 // MARK: - UIViewController overrides
 
 - (id)view {
+    let root: id = msg_super![env; this view];
     let vc: id = msg![env; this selectedViewController];
-    if vc == nil { return nil; }
-    msg![env; vc view]
+    if vc == nil { return root; }
+    let child: id = msg![env; vc view];
+    if child == nil || child == root { return root; }
+    let bar = env.objc.borrow::<UITabBarControllerHostObject>(this).tab_bar;
+    let bounds: CGRect = msg![env; root bounds];
+    let bar_height = bounds.size.height.min(49.0).max(0.0);
+    let content = CGRect { origin: bounds.origin,
+        size: CGSize { width: bounds.size.width, height: (bounds.size.height - bar_height).max(0.0) } };
+    let subviews: id = msg![env; root subviews];
+    retain(env, subviews);
+    let count: NSUInteger = msg![env; subviews count];
+    for i in (0..count).rev() {
+        let view: id = msg![env; subviews objectAtIndex:i];
+        if view != child && view != bar { () = msg![env; view removeFromSuperview]; }
+    }
+    release(env, subviews);
+    () = msg![env; child setFrame:content];
+    () = msg![env; child setAutoresizingMask:18u32];
+    let parent: id = msg![env; child superview];
+    if parent != root { () = msg![env; root addSubview:child]; }
+    if bar != nil {
+        let rect = CGRect { origin: CGPoint { x: bounds.origin.x, y: bounds.origin.y + content.size.height },
+            size: CGSize { width: bounds.size.width, height: bar_height } };
+        () = msg![env; bar setFrame:rect];
+        () = msg![env; bar setAutoresizingMask:10u32];
+        let parent: id = msg![env; bar superview];
+        if parent != root { () = msg![env; root addSubview:bar]; }
+        () = msg![env; root bringSubviewToFront:bar];
+    }
+    root
 }
 
 - (())viewDidLoad {

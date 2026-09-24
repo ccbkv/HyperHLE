@@ -3,8 +3,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
-//! Shared helpers for recreating the authentic iOS 5 (skeuomorphic) UIKit
-//! appearance.
+//! Shared drawing primitives for the iOS 5/6 UIKit appearance.
+//! Default appearance follows sketch-ios-master/Phone.svg and Clock.svg.
 //!
 //! iOS 5 controls are heavily *skeuomorphic*: bars and buttons are drawn with
 //! a vertical two-part gloss gradient, a bright 1px highlight along the top
@@ -27,6 +27,12 @@ use crate::frameworks::core_graphics::cg_context::{
 };
 use crate::frameworks::core_graphics::{CGFloat, CGPoint, CGRect, CGSize};
 use crate::Environment;
+use crate::objc::{id, msg, msg_class, nil};
+use crate::frameworks::core_graphics::cg_bitmap_context::{
+    CGBitmapContextCreate, CGBitmapContextCreateImage,
+};
+use crate::frameworks::core_graphics::cg_context::CGContextRelease;
+use crate::frameworks::core_graphics::cg_image::CGImageRelease;
 
 /// A straight RGBA colour, components in the `0.0..=1.0` range.
 pub type Rgba = (CGFloat, CGFloat, CGFloat, CGFloat);
@@ -44,6 +50,127 @@ fn lerp_rgba(a: Rgba, b: Rgba, t: CGFloat) -> Rgba {
         lerp(a.2, b.2, t),
         lerp(a.3, b.3, t),
     )
+}
+
+/// PNG extracted from Phone.svg image0 (14 x 20 pixels, 7 x 10 points).
+/// The reference SVG is not needed at build time or runtime.
+pub fn draw_grouped_texture(env: &mut Environment, ctx: CGContextRef, rect: CGRect) {
+    use std::sync::OnceLock;
+    use crate::frameworks::core_graphics::cg_context::{CGContextClipToRect, CGContextDrawImage};
+    static PIXELS: OnceLock<Vec<u8>> = OnceLock::new();
+    if ctx.is_null() || !rect.size.width.is_finite() || !rect.size.height.is_finite()
+        || rect.size.width <= 0.0 || rect.size.height <= 0.0 { return; }
+    let pixels = PIXELS.get_or_init(|| {
+        const PNG: &str = concat!(
+            "iVBORw0KGgoAAAANSUhEUgAAAA4AAAAUCAYAAAC9BQwsAAAACXBIWXMAABYlAAAWJQFJUiTw",
+            "AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAA1SURBVHgB7dSxDQBACAJA//P7r/",
+            "aFrasYXMAYY2mghWs5Xw1SxD2tcWUYQkLCBfA1Ntl3IAAE8gmdW2ZFPQAAAABJRU5ErkJggg=="
+        );
+        let mut bytes = Vec::new();
+        let mut bits = 0u32;
+        let mut value = 0u32;
+        for byte in PNG.bytes().take_while(|&b| b != b'=') {
+            let n = match byte {
+                b'A'..=b'Z' => byte - b'A', b'a'..=b'z' => byte - b'a' + 26,
+                b'0'..=b'9' => byte - b'0' + 52, b'+' => 62, b'/' => 63,
+                _ => unreachable!(),
+            };
+            value = (value << 6) | n as u32;
+            bits += 6;
+            if bits >= 8 {
+                bits -= 8;
+                bytes.push((value >> bits) as u8);
+                value &= (1 << bits) - 1;
+            }
+        }
+        let image = crate::image::Image::from_bytes(&bytes).expect("embedded UIKit texture");
+        assert_eq!(image.dimensions(), (14, 20));
+        image.pixels().to_vec()
+    });
+    let image = crate::frameworks::core_graphics::cg_image::from_image(
+        env, crate::image::Image::from_pixel_vec(pixels.clone(), (14, 20)),
+    );
+    CGContextSaveGState(env, ctx);
+    CGContextClipToRect(env, ctx, rect);
+    let x0 = (rect.origin.x / 7.0).floor() * 7.0;
+    let y0 = (rect.origin.y / 10.0).floor() * 10.0;
+    let columns = ((rect.origin.x + rect.size.width - x0) / 7.0).ceil() as i32;
+    let rows = ((rect.origin.y + rect.size.height - y0) / 10.0).ceil() as i32;
+    for y in 0..rows {
+        for x in 0..columns {
+            CGContextDrawImage(env, ctx, CGRect {
+                origin: CGPoint { x: x0 + x as f32 * 7.0, y: y0 + y as f32 * 10.0 },
+                size: CGSize { width: 7.0, height: 10.0 },
+            }, image);
+        }
+    }
+    CGContextRestoreGState(env, ctx);
+    CGImageRelease(env, image);
+}
+
+/// Convert the SVG's sRGB colour notation without losing the source values.
+pub const fn rgb(hex: u32) -> Rgba {
+    (((hex >> 16) & 255) as CGFloat / 255.0,
+     ((hex >> 8) & 255) as CGFloat / 255.0,
+     (hex & 255) as CGFloat / 255.0, 1.0)
+}
+
+pub const NAVIGATION: [(CGFloat, Rgba); 4] = [
+    (0.0, rgb(0xC1D1E4)), (0.33, rgb(0xA1B2C9)),
+    (0.67, rgb(0x758CAB)), (1.0, rgb(0x557094)),
+];
+pub const NAVIGATION_BUTTON: [(CGFloat, Rgba); 4] = [
+    (0.0, rgb(0xA2B2C9)), (0.33, rgb(0x798EAC)),
+    (0.67, rgb(0x506D94)), (1.0, rgb(0x405F8A)),
+];
+
+fn sample(stops: &[(CGFloat, Rgba)], t: CGFloat) -> Rgba {
+    let Some(&(mut position, mut color)) = stops.first() else {
+        return (0.0, 0.0, 0.0, 0.0);
+    };
+    for &(next, next_color) in &stops[1..] {
+        if t < next {
+            return lerp_rgba(color, next_color,
+                ((t - position) / (next - position)).clamp(0.0, 1.0));
+        }
+        position = next;
+        color = next_color;
+    }
+    color
+}
+
+/// Draw rounded scanlines directly; never erase neighbouring artwork.
+pub fn draw_surface(
+    env: &mut Environment, ctx: CGContextRef, rect: CGRect,
+    radius: CGFloat, stops: &[(CGFloat, Rgba)], border: Rgba,
+) {
+    if ctx.is_null() || !rect.size.width.is_finite()
+        || !rect.size.height.is_finite()
+        || rect.size.width <= 0.0 || rect.size.height <= 0.0 { return; }
+    CGContextSaveGState(env, ctx);
+    let r = radius.max(0.0).min(rect.size.width / 2.0).min(rect.size.height / 2.0);
+    let steps = (rect.size.height * 2.0).ceil() as i32;
+    for i in 0..steps {
+        let y = i as CGFloat * 0.5;
+        let height = (rect.size.height - y).min(0.5);
+        let cy = y + height / 2.0;
+        let dy = (r - cy.min(rect.size.height - cy)).max(0.0);
+        let inset = r - (r * r - dy * dy).max(0.0).sqrt();
+        let t = if steps > 1 { i as CGFloat / (steps - 1) as CGFloat } else { 0.0 };
+        let mut strip = CGRect {
+            origin: CGPoint { x: rect.origin.x + inset, y: rect.origin.y + y },
+            size: CGSize { width: (rect.size.width - 2.0 * inset).max(0.0), height },
+        };
+        let color = sample(stops, t);
+        if border.3 > 0.0 {
+            fill_solid(env, ctx, strip, border);
+            if y < 0.5 || y + height > rect.size.height - 0.5 { continue; }
+            strip.origin.x += 0.5;
+            strip.size.width = (strip.size.width - 1.0).max(0.0);
+        }
+        fill_solid(env, ctx, strip, color);
+    }
+    CGContextRestoreGState(env, ctx);
 }
 
 /// Clamp a component to the representable colour range.
@@ -102,8 +229,7 @@ pub fn fill_vertical_gradient(
             },
             size: CGSize {
                 width: rect.size.width,
-                // Slightly overlap so no seams appear between strips.
-                height: 1.0,
+                height: (rect.size.height - i as CGFloat).min(1.0),
             },
         };
         CGContextFillRect(env, ctx, strip);
@@ -148,6 +274,7 @@ pub struct BarPalette {
     pub lower_bottom: Rgba,
     /// Dark shadow line painted along the very bottom edge (1px).
     pub bottom_shadow: Rgba,
+    pub stop_positions: [CGFloat; 4],
 }
 
 impl BarPalette {
@@ -155,48 +282,52 @@ impl BarPalette {
     /// `UIToolbar` on iOS 5.
     pub fn navigation_default() -> Self {
         BarPalette {
-            top_highlight: (0.72, 0.76, 0.83, 1.0),
-            upper_top: (0.56, 0.61, 0.70, 1.0),
-            upper_bottom: (0.44, 0.51, 0.62, 1.0),
-            lower_top: (0.40, 0.47, 0.59, 1.0),
-            lower_bottom: (0.30, 0.37, 0.50, 1.0),
-            bottom_shadow: (0.16, 0.20, 0.28, 1.0),
+            top_highlight: rgb(0xD6E1EF),
+            upper_top: NAVIGATION[0].1,
+            upper_bottom: NAVIGATION[1].1,
+            lower_top: NAVIGATION[2].1,
+            lower_bottom: NAVIGATION[3].1,
+            bottom_shadow: rgb(0x3F5C80),
+            stop_positions: [0.0, 0.33, 0.67, 1.0],
         }
     }
 
     /// `UIBarStyleBlack` bars (also the base for the `UITabBar`).
     pub fn black() -> Self {
         BarPalette {
-            top_highlight: (0.34, 0.34, 0.36, 1.0),
-            upper_top: (0.22, 0.22, 0.24, 1.0),
-            upper_bottom: (0.13, 0.13, 0.15, 1.0),
-            lower_top: (0.11, 0.11, 0.12, 1.0),
-            lower_bottom: (0.02, 0.02, 0.03, 1.0),
+            top_highlight: (0.39, 0.39, 0.40, 1.0),
+            upper_top: (0.29, 0.29, 0.30, 1.0),
+            upper_bottom: (0.18, 0.18, 0.19, 1.0),
+            lower_top: (0.18, 0.18, 0.19, 1.0),
+            lower_bottom: (0.07, 0.07, 0.08, 1.0),
             bottom_shadow: (0.0, 0.0, 0.0, 1.0),
+            stop_positions: [0.0, 0.33, 0.67, 1.0],
         }
     }
 
     /// The light-grey gradient used behind a `UISearchBar` on iOS 5.
     pub fn search_bar() -> Self {
         BarPalette {
-            top_highlight: (0.85, 0.86, 0.88, 1.0),
-            upper_top: (0.74, 0.75, 0.78, 1.0),
-            upper_bottom: (0.66, 0.68, 0.71, 1.0),
-            lower_top: (0.62, 0.64, 0.67, 1.0),
-            lower_bottom: (0.54, 0.56, 0.60, 1.0),
-            bottom_shadow: (0.40, 0.42, 0.46, 1.0),
+            top_highlight: rgb(0xE6EBEF),
+            upper_top: rgb(0xD6DDE2),
+            upper_bottom: rgb(0xCCD4D9),
+            lower_top: rgb(0xBDC7CD),
+            lower_bottom: rgb(0xB2BDC4),
+            bottom_shadow: rgb(0x7C8FA4),
+            stop_positions: [0.0, 0.33, 0.67, 1.0],
         }
     }
 
     /// The dark, glossy `UITabBar` background.
     pub fn tab_bar() -> Self {
         BarPalette {
-            top_highlight: (0.40, 0.40, 0.42, 1.0),
-            upper_top: (0.25, 0.25, 0.27, 1.0),
-            upper_bottom: (0.15, 0.15, 0.16, 1.0),
-            lower_top: (0.12, 0.12, 0.13, 1.0),
-            lower_bottom: (0.03, 0.03, 0.04, 1.0),
-            bottom_shadow: (0.0, 0.0, 0.0, 1.0),
+            top_highlight: rgb(0x555555),
+            upper_top: (0.20, 0.20, 0.20, 1.0),
+            upper_bottom: (0.08, 0.08, 0.08, 1.0),
+            lower_top: rgb(0x000000),
+            lower_bottom: rgb(0x000000),
+            bottom_shadow: rgb(0x000000),
+            stop_positions: [0.0, 0.510204, 0.510304, 1.0],
         }
     }
 
@@ -205,12 +336,13 @@ impl BarPalette {
     /// gradient.
     pub fn from_tint(tint: Rgba) -> Self {
         BarPalette {
-            top_highlight: scale_brightness(tint, 1.45),
-            upper_top: scale_brightness(tint, 1.18),
-            upper_bottom: scale_brightness(tint, 1.02),
-            lower_top: scale_brightness(tint, 0.92),
-            lower_bottom: scale_brightness(tint, 0.72),
-            bottom_shadow: scale_brightness(tint, 0.45),
+            top_highlight: lerp_rgba(tint, (1.0, 1.0, 1.0, tint.3), 0.55),
+            upper_top: lerp_rgba(tint, (1.0, 1.0, 1.0, tint.3), 0.30),
+            upper_bottom: scale_brightness(tint, 0.95),
+            lower_top: scale_brightness(tint, 0.95),
+            lower_bottom: scale_brightness(tint, 0.58),
+            bottom_shadow: scale_brightness(tint, 0.30),
+            stop_positions: [0.0, 0.33, 0.67, 1.0],
         }
     }
 
@@ -242,26 +374,11 @@ pub fn draw_bar_background(
         return;
     }
     CGContextSaveGState(env, ctx);
-    let mid = (rect.size.height / 2.0).floor();
-    let upper = CGRect {
-        origin: rect.origin,
-        size: CGSize {
-            width: rect.size.width,
-            height: mid,
-        },
-    };
-    let lower = CGRect {
-        origin: CGPoint {
-            x: rect.origin.x,
-            y: rect.origin.y + mid,
-        },
-        size: CGSize {
-            width: rect.size.width,
-            height: rect.size.height - mid,
-        },
-    };
-    fill_vertical_gradient(env, ctx, upper, palette.upper_top, palette.upper_bottom);
-    fill_vertical_gradient(env, ctx, lower, palette.lower_top, palette.lower_bottom);
+    let p = palette.stop_positions;
+    draw_surface(env, ctx, rect, 0.0, &[
+        (p[0], palette.upper_top), (p[1], palette.upper_bottom),
+        (p[2], palette.lower_top), (p[3], palette.lower_bottom),
+    ], (0.0, 0.0, 0.0, 0.0));
     // Bright highlight along the top edge.
     horizontal_line(env, ctx, rect, rect.origin.y, palette.top_highlight, 1.0);
     // Dark shadow along the bottom edge.
@@ -291,10 +408,11 @@ pub fn draw_glossy_button(
         return;
     }
     CGContextSaveGState(env, ctx);
-    let factor = if highlighted { 0.82 } else { 1.0 };
-    let top = scale_brightness(base, 1.28 * factor);
-    let upper_bottom = scale_brightness(base, 1.06 * factor);
-    let lower_top = scale_brightness(base, 0.98 * factor);
+    let factor = if highlighted { 0.72 } else { 1.0 };
+    let white = (1.0, 1.0, 1.0, base.3);
+    let top = scale_brightness(lerp_rgba(base, white, 0.4), factor);
+    let upper_bottom = scale_brightness(lerp_rgba(base, white, 0.1), factor);
+    let lower_top = scale_brightness(base, factor);
     let bottom = scale_brightness(base, 0.80 * factor);
     let mid = (rect.size.height / 2.0).floor();
     let upper = CGRect {
@@ -326,6 +444,88 @@ pub fn draw_glossy_button(
         1.0,
     );
     CGContextRestoreGState(env, ctx);
+}
+
+/// Draw an iOS 6 navigation button without clearing the bar underneath.
+pub fn draw_navigation_button(
+    env: &mut Environment,
+    ctx: CGContextRef,
+    rect: CGRect,
+    base: Rgba,
+    back: bool,
+    highlighted: bool,
+) {
+    if ctx.is_null() || rect.size.width < 4.0 || rect.size.height < 4.0 {
+        return;
+    }
+    CGContextSaveGState(env, ctx);
+    let h = rect.size.height;
+    let radius = 5.0f32.min(h / 2.0);
+    let factor = if highlighted { 0.68 } else { 1.0 };
+    // Preserve caller tint while matching the SVG's navigation-button stops.
+    let reference = (0.36, 0.46, 0.62, 1.0);
+    let stops = NAVIGATION_BUTTON.map(|(p, c)| (p, (
+        (c.0 + base.0 - reference.0).clamp(0.0, 1.0),
+        (c.1 + base.1 - reference.1).clamp(0.0, 1.0),
+        (c.2 + base.2 - reference.2).clamp(0.0, 1.0), base.3,
+    )));
+    for i in 0..h.ceil() as i32 {
+        let y = i as CGFloat;
+        let edge = (y + 0.5).min(h - y - 0.5).max(0.0);
+        let dy = (radius - edge).max(0.0);
+        let round = radius - (radius * radius - dy * dy).max(0.0).sqrt();
+        let left = if back {
+            ((y + 0.5 - h / 2.0).abs() / (h / 2.0)) * 11.0
+        } else { round };
+        let strip = CGRect {
+            origin: CGPoint { x: rect.origin.x + left, y: rect.origin.y + y },
+            size: CGSize {
+                width: (rect.size.width - left - round).max(0.0),
+                height: (h - y).min(1.0),
+            },
+        };
+        fill_solid(env, ctx, strip, scale_brightness(base, 0.36));
+        if i > 0 && y + 1.0 < h && strip.size.width > 2.0 {
+            let color = if i == 1 {
+                lerp_rgba(base, (1.0, 1.0, 1.0, base.3), 0.5)
+            } else {
+                sample(&stops, y / (h - 1.0))
+            };
+            let body = CGRect {
+                origin: CGPoint { x: strip.origin.x + 1.0, y: strip.origin.y },
+                size: CGSize { width: strip.size.width - 2.0, height: strip.size.height },
+            };
+            fill_solid(env, ctx, body, scale_brightness(color, factor));
+        }
+    }
+    CGContextRestoreGState(env, ctx);
+}
+
+/// Paint an internal control view's layer at its current size.
+pub fn set_surface(
+    env: &mut Environment, view: id, radius: CGFloat,
+    stops: &[(CGFloat, Rgba)], border: Rgba,
+) {
+    let bounds: CGRect = msg![env; view bounds];
+    let size = bounds.size;
+    if !size.width.is_finite() || !size.height.is_finite()
+        || size.width <= 0.0 || size.height <= 0.0
+        || size.width > 4096.0 || size.height > 4096.0 { return; }
+    let width = size.width.ceil() as u32;
+    let height = size.height.ceil() as u32;
+    let ctx = CGBitmapContextCreate(env, crate::mem::MutPtr::null(),
+        width, height, 8, width * 4, nil, 0x0002_0001);
+    if ctx.is_null() { return; }
+    let rect = CGRect { origin: CGPoint::default(), size };
+    CGContextClearRect(env, ctx, rect);
+    draw_surface(env, ctx, rect, radius, stops, border);
+    let image = CGBitmapContextCreateImage(env, ctx);
+    let layer: id = msg![env; view layer];
+    let clear: id = msg_class![env; UIColor clearColor];
+    () = msg![env; view setBackgroundColor:clear];
+    () = msg![env; layer setContents:image];
+    CGImageRelease(env, image);
+    CGContextRelease(env, ctx);
 }
 
 /// Inset a rectangle by `dx`/`dy` on every edge.
@@ -450,14 +650,18 @@ pub fn draw_rounded_glossy_button(
         return;
     }
     CGContextSaveGState(env, ctx);
-    // Darker bezel underneath.
-    fill_solid(env, ctx, rect, scale_brightness(base, 0.5));
-    // Glossy body inset by the 1px bezel.
+    draw_surface(env, ctx, rect, radius,
+        &[(0.0, rgb(0x333435)), (1.0, rgb(0x737374))],
+        (0.0, 0.0, 0.0, 0.0));
     let body = inset_rect(rect, 1.0, 1.0);
-    draw_glossy_button(env, ctx, body, base, highlighted);
-    // Round the bezel, then round the (slightly smaller) body to leave a
-    // 1px darker outline around the glossy face.
-    clear_rounded_corners(env, ctx, rect, radius);
+    let factor = if highlighted { 0.72 } else { 1.0 };
+    let white = (1.0, 1.0, 1.0, base.3);
+    draw_surface(env, ctx, body, (radius - 1.0).max(0.0), &[
+        (0.0, scale_brightness(lerp_rgba(base, white, 0.4), factor)),
+        (0.5, scale_brightness(lerp_rgba(base, white, 0.1), factor)),
+        (0.5, scale_brightness(base, factor)),
+        (1.0, scale_brightness(base, factor * 0.8)),
+    ], (1.0, 1.0, 1.0, 0.2));
     CGContextRestoreGState(env, ctx);
 }
 
@@ -474,21 +678,86 @@ pub fn draw_recessed_track(
         return;
     }
     CGContextSaveGState(env, ctx);
-    // Subtle darker top / lighter bottom to sell the "sunken" look.
-    let top = scale_brightness(fill, 0.86);
-    let bottom = scale_brightness(fill, 1.08);
-    fill_vertical_gradient(env, ctx, rect, top, bottom);
-    // Bright 1px bottom bevel highlight.
-    horizontal_line(
-        env,
-        ctx,
-        rect,
-        rect.origin.y + rect.size.height - 1.0,
-        (1.0, 1.0, 1.0, 0.35),
-        1.0,
-    );
-    clear_rounded_corners(env, ctx, rect, radius);
+    draw_surface(env, ctx, rect, radius, &[
+        (0.0, scale_brightness(fill, 0.65)),
+        (0.18, scale_brightness(fill, 0.86)),
+        (0.8, fill),
+        (1.0, lerp_rgba(fill, (1.0, 1.0, 1.0, fill.3), 0.35)),
+    ], scale_brightness(fill, 0.55));
     CGContextRestoreGState(env, ctx);
+}
+
+/// Present a themed modal panel. The caller owns the returned overlay.
+pub fn present_panel(
+    env: &mut Environment, owner: id, action: crate::objc::SEL,
+    title: id, message: id, titles: id, destructive: i32, sheet: bool,
+) -> id {
+    let app: id = msg_class![env; UIApplication sharedApplication];
+    let window: id = msg![env; app keyWindow];
+    if window == nil { return nil; }
+    let bounds: CGRect = msg![env; window bounds];
+    let overlay: id = msg_class![env; UIView alloc];
+    let overlay: id = msg![env; overlay initWithFrame:bounds];
+    let dim: id = msg_class![env; UIColor colorWithWhite:0.0f32 alpha:0.45f32];
+    () = msg![env; overlay setBackgroundColor:dim];
+    let count: u32 = msg![env; titles count];
+    let width = (bounds.size.width - 24.0).max(1.0).min(if sheet { 480.0 } else { 284.0 });
+    let label_width = (width - 24.0).max(1.0);
+    let mut labels = Vec::new();
+    let mut y = 14.0;
+    for (text, size) in [(title, 18.0f32), (message, 14.0f32)] {
+        let length: u32 = msg![env; text length];
+        if length == 0 { continue; }
+        let label: id = msg_class![env; UILabel new];
+        let font: id = msg_class![env; UIFont boldSystemFontOfSize:size];
+        let white: id = msg_class![env; UIColor whiteColor];
+        let clear: id = msg_class![env; UIColor clearColor];
+        let shadow: id = msg_class![env; UIColor blackColor];
+        () = msg![env; label setText:text];
+        () = msg![env; label setFont:font];
+        () = msg![env; label setTextColor:white];
+        () = msg![env; label setBackgroundColor:clear];
+        () = msg![env; label setTextAlignment:1i32];
+        () = msg![env; label setNumberOfLines:0i32];
+        () = msg![env; label setShadowColor:shadow];
+        () = msg![env; label setShadowOffset:(CGSize { width: 0.0, height: -1.0 })];
+        let fit: CGSize = msg![env; label sizeThatFits:(CGSize { width: label_width, height: 10000.0 })];
+        let h = fit.height.max(size + 4.0);
+        () = msg![env; label setFrame:(CGRect { origin: CGPoint { x: 12.0, y }, size: CGSize { width: label_width, height: h } })];
+        y += h + 8.0;
+        labels.push(label);
+    }
+    let height = y + count as f32 * 48.0 + 8.0;
+    let visible_height = height.min((bounds.size.height - 24.0).max(1.0));
+    let panel: id = msg_class![env; UIScrollView alloc];
+    let frame = CGRect {
+        origin: CGPoint { x: (bounds.size.width - width) / 2.0,
+            y: if sheet { bounds.size.height - visible_height } else { (bounds.size.height - visible_height) / 2.0 } },
+        size: CGSize { width, height: visible_height },
+    };
+    let panel: id = msg![env; panel initWithFrame:frame];
+    () = msg![env; panel setContentSize:(CGSize { width, height })];
+    set_surface(env, panel, 10.0,
+        &[(0.0, rgb(0x4C576B)), (0.5, rgb(0x252F42)), (1.0, rgb(0x111621))], rgb(0xB8BEC5));
+    for label in labels { () = msg![env; panel addSubview:label]; crate::objc::release(env, label); }
+    for i in 0..count {
+        let title: id = msg![env; titles objectAtIndex:i];
+        let button: id = msg_class![env; UIButton buttonWithType:0i32];
+        () = msg![env; button setFrame:(CGRect { origin: CGPoint { x: 8.0, y: y + i as f32 * 48.0 }, size: CGSize { width: width - 16.0, height: 42.0 } })];
+        () = msg![env; button setTitle:title forState:0u32];
+        () = msg![env; button setTag:(i as i32)];
+        () = msg![env; button addTarget:owner action:action forControlEvents:64u32];
+        let base = if i as i32 == destructive { rgb(0xB52C2C) } else { rgb(0x506D94) };
+        set_surface(env, button, 8.0,
+            &[(0.0, scale_brightness(base, 1.4)), (0.5, base), (1.0, scale_brightness(base, 0.7))], rgb(0x333435));
+        let white: id = msg_class![env; UIColor whiteColor];
+        () = msg![env; button setTitleColor:white forState:0u32];
+        () = msg![env; panel addSubview:button];
+    }
+    () = msg![env; overlay addSubview:panel];
+    crate::objc::release(env, panel);
+    () = msg![env; window addSubview:overlay];
+    overlay
 }
 
 /// Palette + renderer for the iOS 5 dark, glossy rounded panel shared by

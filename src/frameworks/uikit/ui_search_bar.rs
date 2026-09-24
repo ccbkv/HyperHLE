@@ -5,13 +5,16 @@
  */
 //! UISearchBar.
 
-use crate::frameworks::core_graphics::CGRect;
+use crate::frameworks::core_graphics::{CGPoint, CGRect, CGSize};
+use crate::frameworks::uikit::ui_view::{ios5_theme, UIViewHostObject};
 use crate::objc::{
-    id, msg_super, objc_classes, release, retain, ClassExports, HostObject, NSZonePtr,
+    id, impl_HostObject_with_superclass, msg, msg_class, msg_super, nil,
+    objc_classes, release, retain, ClassExports, NSZonePtr,
 };
 
 #[derive(Default)]
 struct UISearchBarHostObject {
+    superclass: UIViewHostObject,
     delegate: id,
     text: id,
     placeholder: id,
@@ -47,7 +50,7 @@ struct UISearchBarHostObject {
     is_first_responder: bool,
 }
 
-impl HostObject for UISearchBarHostObject {}
+impl_HostObject_with_superclass!(UISearchBarHostObject);
 
 pub const CLASSES: ClassExports = objc_classes! {
 
@@ -103,6 +106,59 @@ pub const CLASSES: ClassExports = objc_classes! {
     msg_super![env; this initWithCoder:coder]
 }
 
+- (())layoutSubviews {
+    () = msg_super![env; this layoutSubviews];
+    () = msg![env; this setNeedsDisplay];
+}
+
+- (())drawRect:(CGRect)_rect {
+    use ios5_theme::{draw_bar_background, draw_recessed_track, rgb, BarPalette};
+    let ctx = crate::frameworks::uikit::ui_graphics::UIGraphicsGetCurrentContext(env);
+    if ctx == nil { return; }
+    let bounds: CGRect = msg![env; this bounds];
+    let host = env.objc.borrow::<UISearchBarHostObject>(this);
+    let (image, tint, style, text, placeholder) = (
+        host.background_image, host.bar_tint_color, host.bar_style,
+        host.text, host.placeholder,
+    );
+    if image != nil { () = msg![env; image drawInRect:bounds]; }
+    else {
+        let palette = if tint != nil {
+            BarPalette::from_tint(crate::frameworks::uikit::ui_color::get_rgba(&env.objc, tint))
+        } else if style != 0 { BarPalette::black() } else { BarPalette::search_bar() };
+        draw_bar_background(env, ctx, bounds, palette);
+    }
+    let field = ios5_theme::inset_rect(bounds, 8.0, 8.0);
+    draw_recessed_track(env, ctx, field, rgb(0xFFFFFF), 14.0);
+    let len: u32 = msg![env; text length];
+    let value = if len == 0 { placeholder } else { text };
+    let color: id = if len == 0 { msg_class![env; UIColor grayColor] }
+        else { msg_class![env; UIColor blackColor] };
+    () = msg![env; color set];
+    let font: id = msg_class![env; UIFont systemFontOfSize:14.0f32];
+    use crate::frameworks::core_graphics::cg_context::{CGContextSaveGState, CGContextRestoreGState, CGContextClipToRect};
+    CGContextSaveGState(env, ctx);
+    CGContextClipToRect(env, ctx, ios5_theme::inset_rect(field, 5.0, 2.0));
+    let icon = CGRect { origin: CGPoint { x: field.origin.x + 9.0, y: field.origin.y + 7.0 },
+        size: CGSize { width: 10.0, height: 10.0 } };
+    ios5_theme::draw_surface(env, ctx, icon, 5.0,
+        &[(0.0, rgb(0x737374)), (1.0, rgb(0x737374))], (0.0, 0.0, 0.0, 0.0));
+    ios5_theme::draw_surface(env, ctx, ios5_theme::inset_rect(icon, 2.0, 2.0), 3.0,
+        &[(0.0, rgb(0xFFFFFF)), (1.0, rgb(0xFFFFFF))], (0.0, 0.0, 0.0, 0.0));
+    for i in 0..4 {
+        let handle = CGRect { origin: CGPoint { x: icon.origin.x + 8.0 + i as f32, y: icon.origin.y + 8.0 + i as f32 },
+            size: CGSize { width: 2.0, height: 2.0 } };
+        ios5_theme::fill_solid(env, ctx, handle, rgb(0x737374));
+    }
+    let text_rect = CGRect { origin: CGPoint { x: field.origin.x + 28.0, y: field.origin.y + 2.0 },
+        size: CGSize { width: (field.size.width - 36.0).max(0.0), height: (field.size.height - 4.0).max(0.0) } };
+    CGContextClipToRect(env, ctx, text_rect);
+    () = msg![env; color set];
+    let point = CGPoint { x: text_rect.origin.x, y: field.origin.y + 5.0 };
+    let _: CGSize = msg![env; value drawAtPoint:point withFont:font];
+    CGContextRestoreGState(env, ctx);
+}
+
 - (id)delegate {
     env.objc.borrow::<UISearchBarHostObject>(this).delegate
 }
@@ -119,6 +175,7 @@ pub const CLASSES: ClassExports = objc_classes! {
     retain(env, text);
     release(env, old);
     env.objc.borrow_mut::<UISearchBarHostObject>(this).text = text;
+    () = msg![env; this setNeedsDisplay];
 }
 
 - (id)placeholder {
@@ -129,6 +186,7 @@ pub const CLASSES: ClassExports = objc_classes! {
     retain(env, placeholder);
     release(env, old);
     env.objc.borrow_mut::<UISearchBarHostObject>(this).placeholder = placeholder;
+    () = msg![env; this setNeedsDisplay];
 }
 
 - (id)prompt {
@@ -143,6 +201,7 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 - (())setBarStyle:(i32)style {
     env.objc.borrow_mut::<UISearchBarHostObject>(this).bar_style = style;
+    () = msg![env; this setNeedsDisplay];
 }
 - (i32)barStyle {
     env.objc.borrow::<UISearchBarHostObject>(this).bar_style
@@ -220,6 +279,7 @@ pub const CLASSES: ClassExports = objc_classes! {
     retain(env, color);
     release(env, old);
     env.objc.borrow_mut::<UISearchBarHostObject>(this).bar_tint_color = color;
+    () = msg![env; this setNeedsDisplay];
 }
 - (id)barTintColor {
     env.objc.borrow::<UISearchBarHostObject>(this).bar_tint_color
@@ -281,6 +341,7 @@ pub const CLASSES: ClassExports = objc_classes! {
     retain(env, image);
     release(env, old);
     env.objc.borrow_mut::<UISearchBarHostObject>(this).background_image = image;
+    () = msg![env; this setNeedsDisplay];
 }
 - (id)backgroundImage {
     env.objc.borrow::<UISearchBarHostObject>(this).background_image

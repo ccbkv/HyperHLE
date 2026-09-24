@@ -5,7 +5,7 @@
 use crate::dyld::{export_c_func, FunctionExports};
 use crate::frameworks::core_graphics::cg_context::CGContextDrawImage;
 use crate::frameworks::core_graphics::cg_image::{
-    self, CGImageGetHeight, CGImageGetWidth, CGImageRef, CGImageRelease, CGImageRetain,
+    self, CGImageRef, CGImageRelease, CGImageRetain,
 };
 use crate::frameworks::core_graphics::{CGFloat, CGPoint, CGRect, CGSize};
 use crate::frameworks::foundation::ns_string::get_static_str;
@@ -42,6 +42,7 @@ impl State {
 #[derive(Default)]
 struct UIImageHostObject {
     cg_image: CGImageRef,
+    scale: CGFloat,
     orientation: NSInteger, // UIImageOrientation
     left_cap_width: NSInteger,
     top_cap_height: NSInteger,
@@ -67,6 +68,7 @@ pub const CLASSES: ClassExports = objc_classes! {
 + (id)allocWithZone:(NSZonePtr)_zone {
     let host_object = Box::new(UIImageHostObject {
         cg_image: nil,
+        scale: 1.0,
         orientation: 0, // UIImageOrientationUp
         left_cap_width: 0,
         top_cap_height: 0,
@@ -138,18 +140,9 @@ pub const CLASSES: ClassExports = objc_classes! {
 }
 
 // iOS 4.0+
-+ (id)imageWithCGImage:(CGImageRef)cg_image scale:(CGFloat)_scale orientation:(NSInteger)orientation {
-    // touchHLE's UIImage doesn't honour the scale factor (the app already
-    // assumes the image's pixel dimensions are correct), so we just call
-    // the regular initializer and store the orientation. Apps on iOS 5/6
-    // (e.g. ketchapp's "2 Cars") rely on this overload existing —
-    // returning `nil` from `[UIImage imageWithCGImage:scale:orientation:]`
-    // makes most images render as a placeholder.
++ (id)imageWithCGImage:(CGImageRef)cg_image scale:(CGFloat)scale orientation:(NSInteger)orientation {
     let new: id = msg![env; this alloc];
-    let new: id = msg![env; new initWithCGImage:cg_image];
-    if new != nil {
-        env.objc.borrow_mut::<UIImageHostObject>(new).orientation = orientation;
-    }
+    let new: id = msg![env; new initWithCGImage:cg_image scale:scale orientation:orientation];
     autorelease(env, new)
 }
 
@@ -164,9 +157,20 @@ pub const CLASSES: ClassExports = objc_classes! {
     CGImageRetain(env, cg_image);
     let host = env.objc.borrow_mut::<UIImageHostObject>(this);
     host.cg_image = cg_image;
+    host.scale = 1.0;
     host.orientation = 0;
     host.left_cap_width = 0;
     host.top_cap_height = 0;
+    this
+}
+
+- (id)initWithCGImage:(CGImageRef)cg_image scale:(CGFloat)scale orientation:(NSInteger)orientation {
+    let this: id = msg![env; this initWithCGImage:cg_image];
+    if this != nil {
+        let host = env.objc.borrow_mut::<UIImageHostObject>(this);
+        host.scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
+        host.orientation = orientation;
+    }
     this
 }
 
@@ -185,7 +189,14 @@ pub const CLASSES: ClassExports = objc_classes! {
         return this;
     };
 
-    env.objc.borrow_mut::<UIImageHostObject>(this).cg_image = cg_image::from_image(env, image);
+    let filename = path_str.rsplit('/').next().unwrap_or(&path_str);
+    let stem = filename.rsplit_once('.').map_or(filename, |(stem, _)| stem);
+    let stem = stem.split('~').next().unwrap_or(stem);
+    let scale = if stem.ends_with("@2x") { 2.0 } else { 1.0 };
+    let cg_image = cg_image::from_image(env, image);
+    let host = env.objc.borrow_mut::<UIImageHostObject>(this);
+    host.cg_image = cg_image;
+    host.scale = scale;
     this
 }
 
@@ -206,12 +217,16 @@ pub const CLASSES: ClassExports = objc_classes! {
 // MARK: - Properties
 
 - (CGSize)size {
-    let image = env.objc.borrow::<UIImageHostObject>(this).cg_image;
-    let (width, height) = cg_image::borrow_image(&env.objc, image).dimensions();
+    let host = env.objc.borrow::<UIImageHostObject>(this);
+    let (width, height) = cg_image::borrow_image(&env.objc, host.cg_image).dimensions();
     CGSize {
-        width: width as _,
-        height: height as _,
+        width: width as CGFloat / host.scale,
+        height: height as CGFloat / host.scale,
     }
+}
+
+- (CGFloat)scale {
+    env.objc.borrow::<UIImageHostObject>(this).scale
 }
 
 - (CGImageRef)CGImage {
@@ -225,7 +240,8 @@ pub const CLASSES: ClassExports = objc_classes! {
 // MARK: - Stretchable Images (iOS 2.0 - 4.x legacy method)
 
 - (id)stretchableImageWithLeftCapWidth:(NSInteger)leftCapWidth topCapHeight:(NSInteger)topCapHeight {
-    let cg_image = env.objc.borrow::<UIImageHostObject>(this).cg_image;
+    let host = env.objc.borrow::<UIImageHostObject>(this);
+    let (cg_image, scale, orientation) = (host.cg_image, host.scale, host.orientation);
 
     // Создаем новый объект UIImage на основе того же CGImage.
     // ИСПОЛЬЗУЕМ msg_class! для отправки сообщения alloc классу
@@ -234,6 +250,8 @@ pub const CLASSES: ClassExports = objc_classes! {
 
     // Но прописываем ему параметры растяжения
     let host = env.objc.borrow_mut::<UIImageHostObject>(new_img);
+    host.scale = scale;
+    host.orientation = orientation;
     host.left_cap_width = leftCapWidth;
     host.top_cap_height = topCapHeight;
 
@@ -254,13 +272,8 @@ pub const CLASSES: ClassExports = objc_classes! {
     let context = UIGraphicsGetCurrentContext(env);
     if context == nil { return; }
     let image = env.objc.borrow::<UIImageHostObject>(this).cg_image;
-    let rect = CGRect {
-        origin: point,
-        size: CGSize {
-            width: CGImageGetWidth(env, image) as CGFloat,
-            height: CGImageGetHeight(env, image) as CGFloat,
-        }
-    };
+    let size: CGSize = msg![env; this size];
+    let rect = CGRect { origin: point, size };
     CGContextDrawImage(env, context, rect, image);
 }
 
@@ -292,13 +305,8 @@ pub const CLASSES: ClassExports = objc_classes! {
     let context = UIGraphicsGetCurrentContext(env);
     if context == nil { return; }
     let image = env.objc.borrow::<UIImageHostObject>(this).cg_image;
-    let rect = CGRect {
-        origin: point,
-        size: CGSize {
-            width: CGImageGetWidth(env, image) as CGFloat,
-            height: CGImageGetHeight(env, image) as CGFloat,
-        }
-    };
+    let size: CGSize = msg![env; this size];
+    let rect = CGRect { origin: point, size };
     CGContextDrawImage(env, context, rect, image);
 }
 
@@ -311,8 +319,9 @@ pub const CLASSES: ClassExports = objc_classes! {
     if context == nil { return; }
     let image = env.objc.borrow::<UIImageHostObject>(this).cg_image;
     if image == nil { return; }
-    let tile_w = CGImageGetWidth(env, image) as CGFloat;
-    let tile_h = CGImageGetHeight(env, image) as CGFloat;
+    let size: CGSize = msg![env; this size];
+    let tile_w = size.width;
+    let tile_h = size.height;
     if tile_w <= 0.0 || tile_h <= 0.0 || rect.size.width <= 0.0 || rect.size.height <= 0.0 {
         return;
     }
