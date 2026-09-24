@@ -1493,6 +1493,9 @@ pub const CLASSES: ClassExports = objc_classes! {
 - (id)backgroundColor {
     let layer = env.objc.borrow::<UIViewHostObject>(this).layer;
     let cg_color: CGColorRef = msg![env; layer backgroundColor];
+    if cg_color == nil {
+        return nil;
+    }
     msg_class![env; UIColor colorWithCGColor:cg_color]
 }
 - (())setBackgroundColor:(id)color {
