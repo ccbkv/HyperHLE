@@ -314,12 +314,19 @@ jobs:
       with:
         cmakeVersion: "~3.29.0"
 
-    - name: Build  
-      run: cargo build --release  
+    - name: Build
+      env:
+        CARGO_PROFILE_RELEASE_DEBUG: "2"
+        CARGO_PROFILE_RELEASE_STRIP: "none"
+      run: cargo build --release
 
-    - name: Create bundle  
-      shell: bash  
-      run: cd dev-scripts && ./make-windows-bundle.sh ../target/release/touchHLE.exe && mv touchHLE_windows_bundle/ ..  
+    - name: Create bundle
+      shell: bash
+      run: cd dev-scripts && ./make-windows-bundle.sh ../target/release/touchHLE.exe && mv touchHLE_windows_bundle/ ..
+
+    - name: Include Windows debug symbols
+      shell: pwsh
+      run: Copy-Item -LiteralPath target/release/touchHLE.pdb -Destination touchHLE_windows_bundle/touchHLE.pdb -ErrorAction Stop
       
     - uses: actions/upload-artifact@main
       with:  
